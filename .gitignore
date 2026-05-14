@@ -4,5 +4,7 @@
 *.png
 *.csv
 *.html
+__pycache__/
+*.pyc
 repomix*out*
 .cursorindexingignore

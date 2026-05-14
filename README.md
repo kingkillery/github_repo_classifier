@@ -89,10 +89,21 @@ Use the `search_repos.sh` script to discover repositories based on search terms.
 #### Options
 - `-l, --limit NUM`: Number of repositories per search term (default: 15)
 - `-o, --output FILE`: Output filename (default: inputs.json)
+- `-s, --scope SCOPE`: Search scope: `site`, `owner`, or `starred` (default: `site`)
 - `-t, --total NUM`: Total number of repositories to select (default: 50)
+- `-u, --username USER`: GitHub username/org to restrict `owner` scope searches
 - `-h, --help`: Show usage information
 
 The script will create a JSON file with an array of repository URLs ready for batch analysis.
+
+#### Alternate Discovery Scopes
+```bash
+# Search only repositories owned by a specific user or organization
+./search_repos.sh --scope owner --username simonw "datasette,llm"
+
+# Search only your starred repositories (requires gh auth login)
+./search_repos.sh --scope starred "agentic,automation"
+```
 
 ### 1b. List Repositories by Owner (Alternative to Discovery)
 

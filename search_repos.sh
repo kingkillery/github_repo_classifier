@@ -9,20 +9,24 @@ usage() {
     echo "Usage: $0 [OPTIONS] \"search_term1,search_term2,search_term3,...\""
     echo ""
     echo "Options:"
-    echo "  -l, --limit NUM     Number of repos per search term (default: 20)"
+    echo "  -l, --limit NUM     Number of repos per search term (default: 15)"
     echo "  -o, --output FILE   Output file name (default: inputs.json)"
-    echo "  -t, --total NUM     Total number of repos to select (default: 100)"
+    echo "  -s, --scope SCOPE   Search scope: site, owner, or starred (default: site)"
+    echo "  -t, --total NUM     Total number of repos to select (default: 50)"
+    echo "  -u, --username USER GitHub username/org for owner scope"
     echo "  -h, --help          Show this help message"
     echo ""
     echo "Examples:"
     echo "  $0 \"PDF parsing,RAG PDF,document extraction\""
     echo "  $0 -l 20 -t 60 \"machine learning,deep learning,neural networks\""
     echo "  $0 --limit 10 --output ml_repos.json \"tensorflow,pytorch,scikit-learn\""
+    echo "  $0 --scope owner --username simonw \"datasette,llm\""
+    echo "  $0 --scope starred \"agentic,automation\""
     echo ""
-    echo "Search terms will be used to find repositories with various filters:"
-    echo "  - Created since 2020"
-    echo "  - Mix of popular and low-star repositories"
-    echo "  - Recent activity prioritized"
+    echo "Scopes:"
+    echo "  site     Search all of GitHub with multiple discovery strategies"
+    echo "  owner    Search repositories owned by a specific user or organization"
+    echo "  starred  Search your authenticated GitHub account's starred repositories"
     exit 1
 }
 
@@ -31,6 +35,8 @@ LIMIT_PER_SEARCH=15
 OUTPUT_FILE="inputs.json"
 TOTAL_REPOS=50
 SEARCH_TERMS=""
+SEARCH_SCOPE="site"
+TARGET_USERNAME=""
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -43,8 +49,16 @@ while [[ $# -gt 0 ]]; do
             OUTPUT_FILE="$2"
             shift 2
             ;;
+        -s|--scope)
+            SEARCH_SCOPE="$2"
+            shift 2
+            ;;
         -t|--total)
             TOTAL_REPOS="$2"
+            shift 2
+            ;;
+        -u|--username)
+            TARGET_USERNAME="$2"
             shift 2
             ;;
         -h|--help)
@@ -84,10 +98,24 @@ if ! [[ "$TOTAL_REPOS" =~ ^[0-9]+$ ]] || [ "$TOTAL_REPOS" -lt 1 ]; then
     exit 1
 fi
 
+if [[ "$SEARCH_SCOPE" != "site" && "$SEARCH_SCOPE" != "owner" && "$SEARCH_SCOPE" != "starred" ]]; then
+    echo "Error: Scope must be one of: site, owner, starred"
+    exit 1
+fi
+
+if [[ "$SEARCH_SCOPE" == "owner" && -z "$TARGET_USERNAME" ]]; then
+    echo "Error: --username is required when using --scope owner"
+    exit 1
+fi
+
 echo "Searching for repositories with terms: $SEARCH_TERMS"
 echo "Limit per search: $LIMIT_PER_SEARCH"
 echo "Total repos to select: $TOTAL_REPOS"
 echo "Output file: $OUTPUT_FILE"
+echo "Search scope: $SEARCH_SCOPE"
+if [ -n "$TARGET_USERNAME" ]; then
+    echo "Username: $TARGET_USERNAME"
+fi
 echo ""
 
 # Create output file for search results
@@ -101,75 +129,119 @@ merge_json() {
     jq -s '.[0] + .[1]' "$file1" "$file2" > temp.json && mv temp.json "$file1"
 }
 
+run_repo_search() {
+    local search_term=$1
+    shift
+    gh search repos "$search_term" "$@" \
+        --json="fullName,description,stargazersCount,forksCount,pushedAt,url" > temp_search.json 2>/dev/null
+}
+
+filter_repos_file_by_term() {
+    local source_file=$1
+    local search_term=$2
+    local lowered_search_term="${search_term,,}"
+
+    jq --arg term "$lowered_search_term" '
+        map(select(
+            ((.fullName // "") + " " + (.description // ""))
+            | ascii_downcase
+            | contains($term)
+        ))
+    ' "$source_file" > temp_search.json
+}
+
 # Convert comma-separated search terms to array
 IFS=',' read -ra SEARCH_ARRAY <<< "$SEARCH_TERMS"
 
 # Counter for search operations
 search_count=0
 
+if [ "$SEARCH_SCOPE" = "starred" ]; then
+    echo "Fetching starred repositories for the authenticated GitHub user..."
+    if ! gh api "user/starred?per_page=100" --paginate | jq -s '
+        add | map({
+            fullName: .full_name,
+            description: (.description // ""),
+            stargazersCount: (.stargazers_count // 0),
+            forksCount: (.forks_count // 0),
+            pushedAt: (.pushed_at // ""),
+            url: .html_url
+        })
+    ' > temp_starred_repos.json; then
+        echo "Error: Unable to fetch starred repositories. Make sure gh is authenticated locally."
+        rm -f temp_starred_repos.json
+        exit 1
+    fi
+fi
+
 # Perform searches with different strategies for each term
 for search_term in "${SEARCH_ARRAY[@]}"; do
     # Trim whitespace
     search_term=$(echo "$search_term" | xargs)
-    
+
     if [ -z "$search_term" ]; then
         continue
     fi
-    
+
+    if [ "$SEARCH_SCOPE" = "starred" ]; then
+        search_count=$((search_count + 1))
+        echo "Search $search_count: Filtering starred repositories for '$search_term'..."
+        if filter_repos_file_by_term temp_starred_repos.json "$search_term"; then
+            merge_json "$SEARCH_RESULTS_FILE" temp_search.json
+        else
+            echo "  Warning: Starred repository filtering failed for '$search_term'"
+        fi
+        continue
+    fi
+
+    OWNER_ARGS=()
+    if [ "$SEARCH_SCOPE" = "owner" ]; then
+        OWNER_ARGS+=(--owner="$TARGET_USERNAME")
+    fi
+
     search_count=$((search_count + 1))
-    
     echo "Search $search_count: General search for '$search_term'..."
-    gh search repos "$search_term" --created=">=2020-01-01" --limit="$LIMIT_PER_SEARCH" \
-        --json="fullName,description,stargazersCount,forksCount,pushedAt,url" > temp_search.json 2>/dev/null
-    if [ $? -eq 0 ]; then
-        merge_json $SEARCH_RESULTS_FILE temp_search.json
+    if run_repo_search "$search_term" "${OWNER_ARGS[@]}" --created=">=2020-01-01" --limit="$LIMIT_PER_SEARCH"; then
+        merge_json "$SEARCH_RESULTS_FILE" temp_search.json
     else
         echo "  Warning: Search failed for '$search_term'"
     fi
-    
+
     search_count=$((search_count + 1))
     echo "Search $search_count: Python-focused search for '$search_term'..."
-    gh search repos "$search_term" --language=python --created=">=2020-01-01" --limit="$((LIMIT_PER_SEARCH / 2))" \
-        --json="fullName,description,stargazersCount,forksCount,pushedAt,url" > temp_search.json 2>/dev/null
-    if [ $? -eq 0 ]; then
-        merge_json $SEARCH_RESULTS_FILE temp_search.json
+    if run_repo_search "$search_term" "${OWNER_ARGS[@]}" --language=python --created=">=2020-01-01" --limit="$((LIMIT_PER_SEARCH / 2))"; then
+        merge_json "$SEARCH_RESULTS_FILE" temp_search.json
     else
         echo "  Warning: Python search failed for '$search_term'"
     fi
-    
+
     search_count=$((search_count + 1))
     echo "Search $search_count: Low-star search for '$search_term' (hidden gems)..."
-    gh search repos "$search_term" --stars="1..20" --created=">=2021-01-01" --limit="$((LIMIT_PER_SEARCH / 3))" \
-        --json="fullName,description,stargazersCount,forksCount,pushedAt,url" > temp_search.json 2>/dev/null
-    if [ $? -eq 0 ]; then
-        merge_json $SEARCH_RESULTS_FILE temp_search.json
+    if run_repo_search "$search_term" "${OWNER_ARGS[@]}" --stars="1..20" --created=">=2021-01-01" --limit="$((LIMIT_PER_SEARCH / 3))"; then
+        merge_json "$SEARCH_RESULTS_FILE" temp_search.json
     else
         echo "  Warning: Low-star search failed for '$search_term'"
     fi
 
-        search_count=$((search_count + 1))
-    echo "Search $search_count: High-star search for '$search_term' (hidden gems)..."
-    gh search repos "$search_term" --stars=">1000" --created=">=2021-01-01" --limit="$((LIMIT_PER_SEARCH / 3))" \
-        --json="fullName,description,stargazersCount,forksCount,pushedAt,url" > temp_search.json 2>/dev/null
-    if [ $? -eq 0 ]; then
-        merge_json $SEARCH_RESULTS_FILE temp_search.json
+    search_count=$((search_count + 1))
+    echo "Search $search_count: High-star search for '$search_term'..."
+    if run_repo_search "$search_term" "${OWNER_ARGS[@]}" --stars=">1000" --created=">=2021-01-01" --limit="$((LIMIT_PER_SEARCH / 3))"; then
+        merge_json "$SEARCH_RESULTS_FILE" temp_search.json
     else
         echo "  Warning: High-star search failed for '$search_term'"
     fi
-    
+
     search_count=$((search_count + 1))
     echo "Search $search_count: Recently active search for '$search_term'..."
-    gh search repos "$search_term" --updated=">=2024-01-01" --limit="$((LIMIT_PER_SEARCH / 3))" \
-        --json="fullName,description,stargazersCount,forksCount,pushedAt,url" > temp_search.json 2>/dev/null
-    if [ $? -eq 0 ]; then
-        merge_json $SEARCH_RESULTS_FILE temp_search.json
+    if run_repo_search "$search_term" "${OWNER_ARGS[@]}" --updated=">=2024-01-01" --limit="$((LIMIT_PER_SEARCH / 3))"; then
+        merge_json "$SEARCH_RESULTS_FILE" temp_search.json
     else
         echo "  Warning: Recent activity search failed for '$search_term'"
     fi
 done
 
 # Clean up
-rm -f temp_search.json
+rm -f temp_search.json temp_starred_repos.json
 
 # Remove duplicates and sort by stars
 echo "Removing duplicates and processing results..."
