@@ -56,7 +56,7 @@ You will also need to configure `llm` with API keys for your chosen LLM provider
 1.  **Clone the Repository:**
     ```bash
     git clone https://github.com/kingkillery/github-repo-classifier.git
-    cd github_repo_classifier
+    cd github-repo-classifier
     ```
 
 ## Usage
