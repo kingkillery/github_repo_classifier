@@ -1,0 +1,59 @@
+# ghrepo-search packaging.
+#
+# This project is built incrementally per .omo/plans/github-repo-hybrid-search.md.
+# Todo 1 establishes only the package + test harness; later lanes add inventory,
+# fetch, corpus, index, query, deepening, eval, and CLI modules.
+#
+# Dependency policy: keep the core footprint small. Pydantic is sanctioned now
+# (corpus schema lane, Todo 4). Heavy vector / index backends are intentionally
+# absent until their lanes land.
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ghrepo-search"
+version = "0.0.1"
+description = "README/AGENTS-first hybrid (lexical + vector) search over your owned and starred GitHub repositories."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "github-repo-classifier contributors" }]
+keywords = ["github", "search", "retrieval", "hybrid-search", "rag", "lexical", "vector"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "pydantic>=2.7",
+    "typer>=0.12",
+]
+
+[project.scripts]
+ghrepo-search = "ghrepo_search.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/kingkillery/github-repo-classifier"
+
+# PEP 735 dependency groups (uv-native, also supported by modern pip).
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ghrepo_search"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+pythonpath = ["src"]
+# Intentionally NOT turning warnings into errors globally: Python 3.14 is brand
+# new and upstream libraries may emit harmless DeprecationWarnings. Per-test
+# `pytest.warns` / `filterwarnings` markers can tighten this where it matters.
