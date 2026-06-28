@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import urllib.request
+import urllib.error
 import base64
 import hashlib
 import subprocess
@@ -54,7 +56,7 @@ class FetchedFile:
 
 
 class ContentProvider(Protocol):
-    def fetch_file(self, repo: str, path: str) -> FetchedFile | FetchMiss: ...
+    def fetch_file(self, repo: str, path: str, branch: str = "main") -> FetchedFile | FetchMiss: ...
 
 
 @dataclass(slots=True)  # noqa: MUTABLE_OK
@@ -71,7 +73,7 @@ class FixtureContentProvider:
                 files[(repo, path)] = file_path.read_text(encoding="utf-8")
         return cls(files=files)
 
-    def fetch_file(self, repo: str, path: str) -> FetchedFile | FetchMiss:
+    def fetch_file(self, repo: str, path: str, branch: str = "main") -> FetchedFile | FetchMiss:
         self.fetch_log.append(path)
         content = self.files.get((repo, path))
         if content is None:
@@ -80,8 +82,27 @@ class FixtureContentProvider:
 
 
 @dataclass(frozen=True, slots=True)
+class RawContentProvider:
+    def fetch_file(self, repo: str, path: str, branch: str = "main") -> FetchedFile | FetchMiss:
+        url = f"https://raw.githubusercontent.com/{repo}/{branch}/{path}"
+        req = urllib.request.Request(url, headers={"User-Agent": "ghrepo-search/0.0.1"})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as response:
+                content = response.read().decode("utf-8")
+                return FetchedFile(path=path, content=content)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return FetchMiss(repo_full_name=repo, path=path, kind=FetchMissKind.NOT_FOUND)
+            if exc.code == 403 or exc.code == 429:
+                return FetchMiss(repo_full_name=repo, path=path, kind=FetchMissKind.RATE_LIMIT, message=str(exc))
+            return FetchMiss(repo_full_name=repo, path=path, kind=FetchMissKind.API_ERROR, message=str(exc))
+        except Exception as exc:
+            return FetchMiss(repo_full_name=repo, path=path, kind=FetchMissKind.API_ERROR, message=str(exc))
+
+
+@dataclass(frozen=True, slots=True)
 class GhContentProvider:
-    def fetch_file(self, repo: str, path: str) -> FetchedFile | FetchMiss:
+    def fetch_file(self, repo: str, path: str, branch: str = "main") -> FetchedFile | FetchMiss:
         endpoint = f"repos/{repo}/contents/{path}"
         try:
             completed = subprocess.run(
@@ -137,7 +158,7 @@ def fetch_first_stage_docs(repo: RepoRecord, provider: ContentProvider) -> Fetch
         )
     )
     for path in DOC_CANDIDATES:
-        match provider.fetch_file(repo.full_name, path):
+        match provider.fetch_file(repo.full_name, path, branch=repo.default_branch):
             case FetchedFile() as fetched:
                 documents.append(_doc_from_file(repo, fetched))
             case FetchMiss() as miss:

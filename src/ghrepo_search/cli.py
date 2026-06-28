@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
 
 import typer
 
+from ghrepo_search.models import RepoRecord, DocumentRecord
 from ghrepo_search.bucket import BucketConfig, HfCliSyncRunner, plan_bucket_sync, sync_bucket
 from ghrepo_search.corpus import chunk_documents, read_chunks, read_documents, write_chunks, write_documents
 from ghrepo_search.deepening import deepen_results
 from ghrepo_search.eval import read_golden_queries, run_eval, write_eval_report
 from ghrepo_search.export import export_classified_repos
-from ghrepo_search.fetch import FixtureContentProvider, GhContentProvider, fetch_first_stage_docs
+from ghrepo_search.fetch import FixtureContentProvider, RawContentProvider, fetch_first_stage_docs
 from ghrepo_search.index import SearchIndex
 from ghrepo_search.inventory import RawRepoPayload, build_inventory, read_manifest, write_manifest
 from ghrepo_search.search import QueryEngine, QueryRequest
@@ -45,10 +47,16 @@ def fetch(
     """Fetch metadata and high-signal docs without cloning."""
     repos = read_manifest(manifest)
     documents = []
-    for repo in repos:
-        provider = GhContentProvider() if fixture_docs_dir is None else FixtureContentProvider.from_directory(repo.full_name, fixture_docs_dir, {"README.md", "AGENTS.md"})
+
+    def fetch_one(repo: RepoRecord) -> list[DocumentRecord]:
+        provider = RawContentProvider() if fixture_docs_dir is None else FixtureContentProvider.from_directory(repo.full_name, fixture_docs_dir, {"README.md", "AGENTS.md"})
         fetched = fetch_first_stage_docs(repo, provider)
-        documents.extend(fetched.documents)
+        return list(fetched.documents)
+
+    with ThreadPoolExecutor(max_workers=32) as executor:
+        for docs in executor.map(fetch_one, repos):
+            documents.extend(docs)
+
     write_documents(output, tuple(documents))
     typer.echo(json.dumps({"documents": len(documents), "output": str(output)}))
 
