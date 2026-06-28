@@ -50,6 +50,27 @@ def test_inventory_dedupes_owned_and_starred_origins() -> None:
     assert repo.name == "alpha"
     assert repo.url == "https://github.com/KingKillery/Alpha"
 
+def test_inventory_automatically_tags_categories() -> None:
+    """Given owned non-fork repo with <100 stars; when inventory builds; then categories are tagged."""
+    owned = [
+        {
+            "nameWithOwner": "kingkillery/speak-extension",
+            "url": "https://github.com/kingkillery/speak-extension",
+            "description": "An mcp server for speech",
+            "isFork": False,
+            "stargazerCount": 5,
+        }
+    ]
+
+    records = build_inventory(owned=owned, starred=[])
+
+    assert len(records) == 1
+    repo = records[0]
+    assert "kingkillery-original" in repo.topics
+    assert "hidden-gem" in repo.topics
+    assert "mcp-server" in repo.topics
+    assert "plugin-extension" in repo.topics
+
 
 def test_manifest_write_rejects_malformed_repo_without_partial_file(tmp_path: Path) -> None:
     """Given malformed repo payload; when writing manifest; then no partial file remains."""

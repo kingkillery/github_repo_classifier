@@ -59,6 +59,7 @@ class OwnedRepoPayload(BaseModel):
     repository_topics: tuple[_Topic, ...] | None = Field(default=None, alias="repositoryTopics")
     pushed_at: str | None = Field(default="", alias="pushedAt")
     license_info: _LicenseInfo | None = Field(default=None, alias="licenseInfo")
+    is_fork: bool | None = Field(default=False, alias="isFork")
 
 
 class StarredRepoPayload(BaseModel):
@@ -75,6 +76,7 @@ class StarredRepoPayload(BaseModel):
     topics: tuple[str, ...] | None = None
     pushed_at: str | None = ""
     license: _LicenseInfo | None = None
+    fork: bool | None = Field(default=False, alias="fork")
 
 def _name_from_url(url: str) -> tuple[str, str]:
     match = _REPO_RE.match(url)
@@ -109,6 +111,7 @@ def _repo_from_owned(payload: RawRepoPayload) -> RepoRecord:
         forks=parsed.fork_count or 0,
         topics=tuple(topic.name for topic in parsed.repository_topics) if parsed.repository_topics is not None else (),
         pushed_at=parsed.pushed_at or "",
+        is_fork=parsed.is_fork or False,
     )
 
 
@@ -137,6 +140,7 @@ def _repo_from_starred(payload: RawRepoPayload) -> RepoRecord:
         topics=parsed.topics or (),
         pushed_at=parsed.pushed_at or "",
         license=license_name,
+        is_fork=parsed.fork or False,
     )
 
 
@@ -151,8 +155,31 @@ def _merge(left: RepoRecord, right: RepoRecord) -> RepoRecord:
             "topics": tuple(sorted(set(left.topics) | set(right.topics))),
             "pushed_at": max(left.pushed_at, right.pushed_at),
             "license": left.license or right.license,
+            "is_fork": left.is_fork or right.is_fork,
         }
     )
+
+
+def _enrich_topics(repo: RepoRecord) -> RepoRecord:
+    extra_topics = set(repo.topics)
+    text = (repo.full_name + " " + repo.description).lower()
+
+    if "mcp" in text or "mcp" in extra_topics:
+        extra_topics.add("mcp-server")
+    if any(k in text for k in ["plugin", "extension"]) or any(k in extra_topics for k in ["plugin", "extension"]):
+        extra_topics.add("plugin-extension")
+    if "skill" in text or "skill" in extra_topics:
+        extra_topics.add("agent-skills")
+    if "agent" in text or "agent" in extra_topics:
+        extra_topics.add("agent-framework")
+    if repo.language in ["Rust", "Go"] or any(k in text for k in ["cli", "tool", "system"]):
+        extra_topics.add("systems-cli")
+    if repo.stars < 100:
+        extra_topics.add("hidden-gem")
+    if "owned" in [o.value for o in repo.origins] and not repo.is_fork:
+        extra_topics.add("kingkillery-original")
+
+    return repo.model_copy(update={"topics": tuple(sorted(extra_topics))})
 
 
 def build_inventory(*, owned: list[RawRepoPayload], starred: list[RawRepoPayload]) -> list[RepoRecord]:
@@ -160,7 +187,7 @@ def build_inventory(*, owned: list[RawRepoPayload], starred: list[RawRepoPayload
     for repo in [_repo_from_owned(item) for item in owned] + [_repo_from_starred(item) for item in starred]:
         existing = records.get(repo.full_name)
         records[repo.full_name] = repo if existing is None else _merge(existing, repo)
-    return [records[key] for key in sorted(records)]
+    return [_enrich_topics(records[key]) for key in sorted(records)]
 
 
 def write_manifest(path: Path, records: list[RepoRecord]) -> None:

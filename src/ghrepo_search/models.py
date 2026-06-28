@@ -47,6 +47,7 @@ class RepoRecord(BaseModel):
     topics: tuple[str, ...] = ()
     pushed_at: str = ""
     license: str = ""
+    is_fork: bool = False
 
 
 class DocumentRecord(BaseModel):
