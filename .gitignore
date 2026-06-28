@@ -6,3 +6,9 @@
 *.html
 repomix*out*
 .cursorindexingignore
+# Local search environment
+.omo/evidence/
+.delegate-patches/
+*.sqlite
+__pycache__/
+*.pyc
